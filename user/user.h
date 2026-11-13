@@ -1,3 +1,5 @@
+#include "kernel/types.h"
+#include "kernel/pinfo.h"
 #define SBRK_ERROR ((char *)-1)
 
 struct stat;
@@ -25,6 +27,7 @@ char *sys_sbrk(int, int);
 int pause(int);
 int uptime(void);
 int sync(void);
+int getprocs(struct pinfo *buf, int max);
 
 // ulib.c
 int stat(const char *, struct stat *);
