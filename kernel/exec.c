@@ -137,6 +137,15 @@ kexec(char *path, char **argv)
   p->trapframe->sp = sp;         // initial stack pointer
   proc_freepagetable(oldpagetable, oldsz);
 
+  // Put the shell process in MLFQ queue 1
+  if (strcmp(p->name, "sh") == 0) {
+    acquire(&p->lock);
+    p->queue_level = 1;
+    p->waiting_ticks = 0;
+    p->quantum_ticks = 0;
+    release(&p->lock);
+  }
+
   return argc; // this ends up in a0, the first argument to main(argc, argv)
 
 bad:

@@ -126,6 +126,14 @@ found:
   p->pid = allocpid();
   p->state = USED;
 
+  // Initialize MLFQ fields
+  p->queue_level = 3;
+  p->queue_enter_tick = 0;
+  p->waiting_ticks = 0;
+  p->burst_time = 2;
+  p->confidence = 50;
+  p->quantum_ticks = 0;
+
   // Allocate a trapframe page.
   if ((p->trapframe = (struct trapframe *)kalloc()) == 0) {
     freeproc(p);
@@ -225,6 +233,12 @@ userinit(void)
   initproc = p;
 
   p->cwd = namei("/");
+
+  // Initialize init process in MLFQ queue 1
+  p->queue_level = 1;
+  p->queue_enter_tick = 0;
+  p->waiting_ticks = 0;
+  p->quantum_ticks = 0;
 
   p->state = RUNNABLE;
 
