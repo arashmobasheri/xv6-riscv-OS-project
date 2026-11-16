@@ -89,6 +89,14 @@ struct proc {
   int xstate;           // Exit status to be returned to parent's wait
   int pid;              // Process ID
 
+  // MLFQ scheduling information (protected by p->lock)
+  int queue_level;       // Current queue: 1, 2, or 3
+  uint queue_enter_tick; // Tick when the process entered its current queue
+  uint waiting_ticks;    // Ticks spent waiting in RUNNABLE state
+  int burst_time;        // Estimated CPU burst time for SJF
+  int confidence;        // Confidence level for burst_time (0-100)
+  uint quantum_ticks;    // CPU ticks used in the current RR turn
+
   // wait_lock must be held when using this:
   struct proc *parent; // Parent process
 
