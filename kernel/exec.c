@@ -138,11 +138,11 @@ kexec(char *path, char **argv)
   proc_freepagetable(oldpagetable, oldsz);
 
   // Put the shell process in MLFQ queue 1
-  if (strcmp(p->name, "sh") == 0) {
+  if (strncmp(p->name, "sh", 3) == 0) {
     acquire(&p->lock);
     p->queue_level = 1;
     p->waiting_ticks = 0;
-    p->quantum_ticks = 0;
+    p->queue_enter_tick = ticks;
     release(&p->lock);
   }
 

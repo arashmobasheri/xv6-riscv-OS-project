@@ -16,6 +16,12 @@ struct proc *initproc;
 int nextpid = 1;
 struct spinlock pid_lock;
 
+#ifdef MLFQ
+static struct spinlock rand_lock;
+static uint32 rand_state = 2463534242U;
+static int rr_last = 0; // index of the last process picked in queue 1
+#endif
+
 extern void forkret(void);
 static void freeproc(struct proc *p);
 
@@ -52,6 +58,9 @@ procinit(void)
 
   initlock(&pid_lock, "nextpid");
   initlock(&wait_lock, "wait_lock");
+  #ifdef MLFQ
+    initlock(&rand_lock, "rand");
+  #endif
   for (p = proc; p < &proc[NPROC]; p++) {
     initlock(&p->lock, "proc");
     p->state = UNUSED;
@@ -128,7 +137,7 @@ found:
 
   // Initialize MLFQ fields
   p->queue_level = 3;
-  p->queue_enter_tick = 0;
+  p->queue_enter_tick = ticks;
   p->waiting_ticks = 0;
   p->burst_time = 2;
   p->confidence = 50;
@@ -236,7 +245,7 @@ userinit(void)
 
   // Initialize init process in MLFQ queue 1
   p->queue_level = 1;
-  p->queue_enter_tick = 0;
+  p->queue_enter_tick = ticks;
   p->waiting_ticks = 0;
   p->quantum_ticks = 0;
 
@@ -313,6 +322,10 @@ kfork(void)
   release(&wait_lock);
 
   acquire(&np->lock);
+  np->queue_enter_tick = ticks;
+  // init only forks sh, so children of init start in queue 1
+  if (p == initproc)
+    np->queue_level = 1;
   np->state = RUNNABLE;
   release(&np->lock);
 
@@ -433,6 +446,115 @@ kwait(uint64 addr)
   }
 }
 
+#ifdef MLFQ
+// LCG: x' = (a*x + c) mod 2^32, a = 1664525, c = 1013904223.
+// c is odd and a-1 is divisible by 4, so by Hull-Dobell the period is the
+// full 2^32. Low bits of a power-of-two LCG are weak, so use the high bits.
+static int
+rand100(void)
+{
+  int r;
+
+  acquire(&rand_lock);
+  rand_state = rand_state * 1664525U + 1013904223U;
+  r = (rand_state >> 16) % 100;
+  release(&rand_lock);
+  return r;
+}
+
+// Each pick_*() returns with p->lock held, or 0 if its queue has no
+// RUNNABLE process. Scanning is done without holding locks, so a candidate
+// is re-validated after locking (another CPU may have taken it meanwhile).
+static struct proc *
+pick_rr(void)
+{
+  for (int k = 1; k <= NPROC; k++) {
+    int i = (rr_last + k) % NPROC;
+    struct proc *p = &proc[i];
+
+    acquire(&p->lock);
+    if (p->state == RUNNABLE && p->queue_level == 1) {
+      rr_last = i;
+      return p;
+    }
+    release(&p->lock);
+  }
+  return 0;
+}
+
+static struct proc *
+pick_sjf(void)
+{
+  struct proc *cand[NPROC];
+  int bt[NPROC], cf[NPROC];
+
+  for (;;) {
+    int n = 0;
+
+    for (struct proc *p = proc; p < &proc[NPROC]; p++) {
+      acquire(&p->lock);
+      if (p->state == RUNNABLE && p->queue_level == 2) {
+        int j = n++;
+        // stable insertion sort by burst_time
+        while (j > 0 && bt[j - 1] > p->burst_time) {
+          cand[j] = cand[j - 1];
+          bt[j] = bt[j - 1];
+          cf[j] = cf[j - 1];
+          j--;
+        }
+        cand[j] = p;
+        bt[j] = p->burst_time;
+        cf[j] = p->confidence;
+      }
+      release(&p->lock);
+    }
+    if (n == 0)
+      return 0;
+
+    // The last candidate runs regardless of its confidence.
+    int i;
+    for (i = 0; i < n - 1; i++)
+      if (rand100() <= cf[i])
+        break;
+
+    struct proc *p = cand[i];
+    acquire(&p->lock);
+    if (p->state == RUNNABLE && p->queue_level == 2)
+      return p;
+    release(&p->lock);
+  }
+}
+
+static struct proc *
+pick_fcfs(void)
+{
+  for (;;) {
+    struct proc *best = 0;
+    uint bt = 0;
+    int bpid = 0;
+
+    for (struct proc *p = proc; p < &proc[NPROC]; p++) {
+      acquire(&p->lock);
+      if (p->state == RUNNABLE && p->queue_level == 3 &&
+          (best == 0 || p->queue_enter_tick < bt ||
+           (p->queue_enter_tick == bt && p->pid < bpid))) {
+        best = p;
+        bt = p->queue_enter_tick;
+        bpid = p->pid;
+      }
+      release(&p->lock);
+    }
+    if (best == 0)
+      return 0;
+
+    acquire(&best->lock);
+    if (best->state == RUNNABLE && best->queue_level == 3)
+      return best;
+    release(&best->lock);
+  }
+}
+#endif
+
 // Per-CPU process scheduler.
 // Each CPU calls scheduler() after setting itself up.
 // Scheduler never returns.  It loops, doing:
@@ -443,16 +565,40 @@ kwait(uint64 addr)
 void
 scheduler(void)
 {
-  struct proc *p;
   struct cpu *c = mycpu();
 
   c->proc = 0;
+
+#ifdef MLFQ
   for (;;) {
-    // The most recent process to run may have had interrupts
-    // turned off; enable them to avoid a deadlock if all
-    // processes are waiting. Then turn them back off
-    // to avoid a possible race between an interrupt
-    // and wfi.
+    intr_on();
+    intr_off();
+
+    struct proc *p = pick_rr();
+    if (p == 0)
+      p = pick_sjf();
+    if (p == 0)
+      p = pick_fcfs();
+
+    if (p == 0) {
+      asm volatile("wfi");
+      continue;
+    }
+
+    p->state = RUNNING;
+    p->waiting_ticks = 0;
+    p->quantum_ticks = 0;
+    c->proc = p;
+    swtch(&c->context, &p->context);
+
+    mycpu()->intena = 0;
+    c->proc = 0;
+    release(&p->lock);
+  }
+#else
+  struct proc *p;
+
+  for (;;) {
     intr_on();
     intr_off();
 
@@ -460,30 +606,19 @@ scheduler(void)
     for (p = proc; p < &proc[NPROC]; p++) {
       acquire(&p->lock);
       if (p->state == RUNNABLE) {
-        // Switch to chosen process.  It is the process's job
-        // to release its lock and then reacquire it
-        // before jumping back to us.
         p->state = RUNNING;
         c->proc = p;
         swtch(&c->context, &p->context);
-      // The scheduler() pauses here while the process runs.
-      // It resumes when the process switches back to the scheduler.
-
-        // Don't re-enable interrupts on release.
         mycpu()->intena = 0;
-
-        // Process is done running for now.
-        // It should have changed its p->state before coming back.
         c->proc = 0;
         found = 1;
       }
       release(&p->lock);
     }
-    if (found == 0) {
-      // nothing to run; stop running on this core until an interrupt.
+    if (found == 0)
       asm volatile("wfi");
-    }
   }
+#endif
 }
 
 // Switch to scheduler.  Must hold only p->lock
@@ -519,6 +654,7 @@ yield(void)
 {
   struct proc *p = myproc();
   acquire(&p->lock);
+  p->queue_enter_tick = ticks;
   p->state = RUNNABLE;
   sched();
   release(&p->lock);
@@ -605,6 +741,7 @@ wakeup(void *chan)
       // go to sleep, also set it back to RUNNING.
       if (p->state == SLEEPING) {
         p->state = RUNNABLE;
+        p->queue_enter_tick = ticks;
       }
     }
     release(&p->lock);
@@ -629,6 +766,7 @@ kkill(int pid)
       if (p->state == SLEEPING) {
         // Wake process from sleep().
         p->state = RUNNABLE;
+        p->queue_enter_tick = ticks;
       }
       release(&p->lock);
       return 0;

@@ -64,6 +64,8 @@ OBJDUMP = $(TOOLPREFIX)objdump
 DETFLAGS = -ffile-prefix-map=$(CURDIR)=.
 
 CFLAGS = -Wall -Werror -Wno-unknown-attributes -O -fno-omit-frame-pointer -ggdb -gdwarf-2
+SCHEDULER ?= RR
+CFLAGS += -D$(SCHEDULER)
 CFLAGS += $(DETFLAGS)
 CFLAGS += -march=rv64gc
 CFLAGS += -std=gnu99
@@ -153,6 +155,7 @@ UPROGS=\
 	$U/_sync\
 	$U/_ps\
 	$U/_testps\
+	$U/_mlfqtest\
 
 fs.img: mkfs/mkfs README $(UPROGS)
 	mkfs/mkfs fs.img README $(UPROGS)

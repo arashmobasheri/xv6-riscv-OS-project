@@ -12,3 +12,7 @@
 #define FSSIZE      2000              // size of file system in blocks
 #define MAXPATH     128               // maximum file path name
 #define USERSTACK   1                 // user stack pages
+#define QUANTUM     5     // RR time slice in ticks
+#ifndef AGING_LIMIT
+#define AGING_LIMIT 800   // ticks a RUNNABLE process waits before promotion
+#endif
