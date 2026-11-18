@@ -190,3 +190,4 @@ void            virtio_disk_intr(void);
 
 uint64 sys_getprocs(void);
 int getprocsinfo(uint64 buf, int max);
+int ksetmlfq(int pid, int burst, int conf);

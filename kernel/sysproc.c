@@ -126,3 +126,19 @@ sys_getprocs(void)
 
   return getprocsinfo(buf, max);
 }
+
+uint64
+sys_setmlfq(void)
+{
+  int pid, burst, conf;
+
+  argint(0, &pid);
+  argint(1, &burst);
+  argint(2, &conf);
+
+  // confidence is a percentage; burst must be positive
+  if (burst <= 0 || conf < 0 || conf > 100)
+    return -1;
+
+  return ksetmlfq(pid, burst, conf);
+}

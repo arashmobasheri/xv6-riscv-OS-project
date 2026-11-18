@@ -66,6 +66,9 @@ DETFLAGS = -ffile-prefix-map=$(CURDIR)=.
 CFLAGS = -Wall -Werror -Wno-unknown-attributes -O -fno-omit-frame-pointer -ggdb -gdwarf-2
 SCHEDULER ?= RR
 CFLAGS += -D$(SCHEDULER)
+ifdef AGING
+CFLAGS += -DAGING_LIMIT=$(AGING)
+endif
 CFLAGS += $(DETFLAGS)
 CFLAGS += -march=rv64gc
 CFLAGS += -std=gnu99
@@ -176,6 +179,10 @@ GDBPORT = $(shell expr `id -u` % 5000 + 25000)
 QEMUGDB = $(shell if $(QEMU) -help | grep -q '^-gdb'; \
 	then echo "-gdb tcp::$(GDBPORT)"; \
 	else echo "-s -p $(GDBPORT)"; fi)
+
+ifdef CPU
+CPUS := $(CPU)
+endif
 ifndef CPUS
 CPUS := 3
 endif

@@ -944,3 +944,19 @@ getprocsinfo(uint64 buf, int max)
 
   return count;
 }
+
+int
+ksetmlfq(int pid, int burst, int conf)
+{
+  for (struct proc *p = proc; p < &proc[NPROC]; p++) {
+    acquire(&p->lock);
+    if (p->state != UNUSED && p->pid == pid) {
+      p->burst_time = burst;
+      p->confidence = conf;
+      release(&p->lock);
+      return 0;
+    }
+    release(&p->lock);
+  }
+  return -1;
+}
