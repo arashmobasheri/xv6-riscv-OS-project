@@ -905,8 +905,8 @@ procdump(void)
 int
 getprocsinfo(uint64 buf, int max)
 {
-  struct pinfo info[NPROC];
-  struct proc *p;
+  struct pinfo pi;
+  struct proc *p, *me = myproc();
   int count = 0;
 
   if (max < 0 || max > NPROC)
@@ -916,21 +916,31 @@ getprocsinfo(uint64 buf, int max)
     acquire(&wait_lock);
     acquire(&p->lock);
 
-    if (p->state != UNUSED) {
-      info[count].pid = p->pid;
-      info[count].ppid = (p->parent == 0) ? 0 : p->parent->pid;
-      info[count].state = p->state;
-      info[count].sz = p->sz;
-      safestrcpy(info[count].name, p->name, sizeof(info[count].name));
-      count++;
+    if (p->state == UNUSED) {
+      release(&p->lock);
+      release(&wait_lock);
+      continue;
     }
+
+    pi.pid = p->pid;
+    pi.ppid = (p->parent == 0) ? 0 : p->parent->pid;
+    pi.state = p->state;
+    pi.sz = p->sz;
+    safestrcpy(pi.name, p->name, sizeof(pi.name));
+    pi.queue = p->queue_level;
+    pi.waiting = p->waiting_ticks;
+    pi.burst = p->burst_time;
+    pi.confidence = p->confidence;
 
     release(&p->lock);
     release(&wait_lock);
-  }
 
-  if (copyout(myproc()->pagetable, myproc()->sz, buf, (char *)info, count * sizeof(struct pinfo)))
-    return -1;
+    // Copy one entry at a time to keep kernel stack usage small.
+    if (copyout(me->pagetable, me->sz, buf + count * sizeof(pi),
+                (char *)&pi, sizeof(pi)) < 0)
+      return -1;
+    count++;
+  }
 
   return count;
 }
