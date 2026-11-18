@@ -621,6 +621,51 @@ scheduler(void)
 #endif
 }
 
+// Called on a timer interrupt for the running process: should it yield?
+// Q1: when its quantum expires. Q2: every tick, so the random SJF choice is
+// re-run. Q3 (FCFS): never preempted by the clock.
+int
+should_yield(void)
+{
+#ifdef MLFQ
+  struct proc *p = myproc();
+  int r = 0;
+
+  acquire(&p->lock);
+  if (p->queue_level == 1) {
+    if (++p->quantum_ticks >= QUANTUM)
+      r = 1;
+  } else if (p->queue_level == 2) {
+    r = 1;
+  }
+  release(&p->lock);
+  return r;
+#else
+  return 1;
+#endif
+}
+
+// Aging. Called from clockintr on CPU 0 only, after tickslock is released
+// (clockintr takes tickslock -> p->lock in wakeup, so never the reverse).
+void
+aging_tick(void)
+{
+#ifdef MLFQ
+  for (struct proc *p = proc; p < &proc[NPROC]; p++) {
+    acquire(&p->lock);
+    if (p->state == RUNNABLE) {
+      p->waiting_ticks++;
+      if (p->queue_level > 1 && p->waiting_ticks >= AGING_LIMIT) {
+        p->queue_level--;
+        p->waiting_ticks = 0;
+        p->queue_enter_tick = ticks;
+      }
+    }
+    release(&p->lock);
+  }
+#endif
+}
+
 // Switch to scheduler.  Must hold only p->lock
 // and have changed proc->state. Saves and restores
 // intena because intena is a property of this

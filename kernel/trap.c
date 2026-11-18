@@ -82,7 +82,7 @@ usertrap(void)
     kexit(-1);
 
   // give up the CPU if this is a timer interrupt.
-  if (which_dev == 2)
+  if (which_dev == 2 && should_yield())
     yield();
 
   prepare_return();
@@ -154,7 +154,7 @@ kerneltrap()
   }
 
   // give up the CPU if this is a timer interrupt.
-  if (which_dev == 2 && myproc() != 0)
+  if (which_dev == 2 && myproc() != 0 && should_yield())
     yield();
 
   // the yield() may have caused some traps to occur,
@@ -171,6 +171,7 @@ clockintr()
     ticks++;
     wakeup(&ticks);
     release(&tickslock);
+    aging_tick();
   }
 
   // ask for the next timer interrupt. this also clears
