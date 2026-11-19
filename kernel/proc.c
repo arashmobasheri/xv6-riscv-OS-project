@@ -630,15 +630,21 @@ should_yield(void)
 #ifdef MLFQ
   struct proc *p = myproc();
   int r = 0;
+  int ended = 0;                       // TEMP
 
   acquire(&p->lock);
   if (p->queue_level == 1) {
-    if (++p->quantum_ticks >= QUANTUM)
+    if (++p->quantum_ticks >= QUANTUM) {
       r = 1;
+      ended = p->pid;                  // TEMP
+    }
   } else if (p->queue_level == 2) {
     r = 1;
   }
   release(&p->lock);
+
+  if (ended)                           // TEMP
+    printk("[RR] pid %d ran %d ticks, now tick %d\n", ended, QUANTUM, (int)ticks);
   return r;
 #else
   return 1;
