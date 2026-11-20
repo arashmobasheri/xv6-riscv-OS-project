@@ -23,3 +23,4 @@
 #define SYS_sync   22
 #define SYS_getprocs 23
 #define SYS_setmlfq 24
+#define SYS_setnice 25

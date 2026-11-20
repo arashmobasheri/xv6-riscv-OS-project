@@ -29,6 +29,7 @@ int uptime(void);
 int sync(void);
 int getprocs(struct pinfo *buf, int max);
 int setmlfq(int, int, int);
+int setnice(int pid, int nice);
 
 // ulib.c
 int stat(const char *, struct stat *);

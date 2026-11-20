@@ -45,3 +45,4 @@ entry("uptime");
 entry("sync");
 entry("getprocs");
 entry("setmlfq");
+entry("setnice");

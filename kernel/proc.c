@@ -112,6 +112,25 @@ allocpid()
   return pid;
 }
 
+//CFS standard weights table (nice = -20, -19, ...., 19)
+static const int nice_weights[40] = {
+  88761, 71755, 56483, 46273, 36291,
+  29154, 23254, 18705, 14949, 11916,
+  9548, 7620, 6100, 4904, 3906,
+  3121, 2501, 1991, 1586, 1277,
+  1024, 820, 655, 526, 423,
+  335, 272, 215, 172, 137,
+  110, 87, 70, 56, 45,
+  36, 29, 23, 18, 15
+};
+
+//nice -> weight
+static int
+nice_to_weight(int nice)
+{
+  return nice_weights[nice + 20];
+}
+
 // Look in the process table for an UNUSED proc.
 // If found, initialize state required to run in the kernel,
 // and return with p->lock held.
@@ -142,6 +161,12 @@ found:
   p->burst_time = 2;
   p->confidence = 50;
   p->quantum_ticks = 0;
+
+  // Initialize CFS fields
+  p->nice = 0;
+  p->weight = 1024;
+  p->vruntime = 0;
+  p->cfs_ticks = 0;
 
   // Allocate a trapframe page.
   if ((p->trapframe = (struct trapframe *)kalloc()) == 0) {
@@ -277,6 +302,9 @@ growproc(int n)
   return 0;
 }
 
+#ifdef CFS
+static uint64 min_vruntime(void);
+#endif
 // Create a new process, copying the parent.
 // Sets up child kernel stack to return as if from fork() system call.
 int
@@ -321,8 +349,17 @@ kfork(void)
   np->parent = p;
   release(&wait_lock);
 
+  #ifdef CFS
+  uint64 min = min_vruntime();
+  #endif
+
   acquire(&np->lock);
   np->queue_enter_tick = ticks;
+  #ifdef CFS
+  if (np->vruntime < min)
+    np->vruntime = min;
+  #endif
+
   // init only forks sh, so children of init start in queue 1
   if (p == initproc)
     np->queue_level = 1;
@@ -330,6 +367,30 @@ kfork(void)
   release(&np->lock);
 
   return pid;
+}
+
+int
+setnice(int pid, int nice)
+{
+  struct proc *p;
+
+  if (nice < -20 || nice > 19)
+    return -1;
+
+  for (p = proc; p < &proc[NPROC]; p++) {
+    acquire(&p->lock);
+
+    if (p->pid == pid && p->state != UNUSED) {
+      p->nice = nice;
+      p->weight = nice_to_weight(nice);
+      release(&p->lock);
+      return 0;
+    }
+
+    release(&p->lock);
+  }
+
+  return -1;
 }
 
 // Pass p's abandoned children to init.
@@ -445,6 +506,34 @@ kwait(uint64 addr)
     acquire(&wait_lock);
   }
 }
+
+#ifdef CFS
+static struct proc *
+pick_cfs(void)
+{
+  struct proc *best = 0;
+
+  for (struct proc *p = proc; p < &proc[NPROC]; p++) {
+    acquire(&p->lock);
+
+    if (p->state == RUNNABLE) {
+      if (best == 0 || p->vruntime < best->vruntime ||
+          (p->vruntime == best->vruntime && p->pid < best->pid)) {
+
+        if (best != 0)
+          release(&best->lock);
+
+        best = p;
+        continue;
+      }
+    }
+
+    release(&p->lock);
+  }
+
+  return best;
+}
+#endif
 
 #ifdef MLFQ
 // LCG: x' = (a*x + c) mod 2^32, a = 1664525, c = 1013904223.
@@ -569,7 +658,27 @@ scheduler(void)
 
   c->proc = 0;
 
-#ifdef MLFQ
+#ifdef CFS
+  for (;;) {
+    intr_on();
+    intr_off();
+
+    struct proc *p = pick_cfs();
+    if (p == 0) {
+      asm volatile("wfi");
+      continue;
+    }
+
+    p->cfs_ticks = 0;
+    p->state = RUNNING;
+    c->proc = p;
+    swtch(&c->context, &p->context);
+
+    mycpu()->intena = 0;
+    c->proc = 0;
+    release(&p->lock);
+  }
+#elif defined(MLFQ)
   for (;;) {
     intr_on();
     intr_off();
@@ -627,7 +736,41 @@ scheduler(void)
 int
 should_yield(void)
 {
-#ifdef MLFQ
+#ifdef CFS
+  struct proc *p = myproc();
+  uint weight;
+  uint64 total_weight = 0;
+  uint slice;
+  int r;
+
+  // Read the current process weight
+  acquire(&p->lock);
+  weight = p->weight;
+  release(&p->lock);
+
+  // Calculate total weight of runnable and running processes
+  for (struct proc *q = proc; q < &proc[NPROC]; q++) {
+    acquire(&q->lock);
+    if (q->state == RUNNABLE || q->state == RUNNING)
+      total_weight += q->weight;
+
+    release(&q->lock);
+  }
+
+  // Calculate time slice: L = 12, minimum granularity = 2
+  slice = (12ULL * weight) / total_weight;
+  if (slice < 2)
+    slice = 2;
+  acquire(&p->lock);
+  p->cfs_ticks++;
+
+  // Update virtual runtime
+  p->vruntime += (1024ULL * 1000) / p->weight;
+  r = (p->cfs_ticks >= slice);
+  release(&p->lock);
+  return r;
+
+#elif defined(MLFQ)
   struct proc *p = myproc();
   int r = 0;
   int ended = 0;                       // TEMP
@@ -775,6 +918,28 @@ sleep(void)
   release(&p->lock);
 }
 
+//Find min vruntime
+#ifdef CFS
+static uint64
+min_vruntime(void)
+{
+  uint64 min = ~0ULL;
+
+  for (struct proc *p = proc; p < &proc[NPROC]; p++) {
+    acquire(&p->lock);
+
+    if ((p->state == RUNNABLE || p->state == RUNNING) &&
+        p->vruntime < min) {
+      min = p->vruntime;
+    }
+
+    release(&p->lock);
+  }
+
+  return min;
+}
+#endif
+
 // Wake up all processes sleeping on channel chan.
 void
 wakeup(void *chan)
@@ -782,15 +947,19 @@ wakeup(void *chan)
   struct proc *p;
 
   for (p = proc; p < &proc[NPROC]; p++) {
+#ifdef CFS
+    uint64 min = min_vruntime();
+#endif
+
     acquire(&p->lock);
     if (p->chan == chan) {
-      // If the process is waiting for wakeups on this channel,
-      // signal that the wakeup happened by clearing p->chan.
       p->chan = 0;
 
-      // If this waiting process has gotten so far as to actually
-      // go to sleep, also set it back to RUNNING.
       if (p->state == SLEEPING) {
+#ifdef CFS
+        if (p->vruntime < min)
+          p->vruntime = min;
+#endif
         p->state = RUNNABLE;
         p->queue_enter_tick = ticks;
       }
@@ -903,7 +1072,12 @@ procdump(void)
       state = states[p->state];
     else
       state = "???";
+
+#ifdef CFS
+    printk("%d %s %s nice=%d vruntime=%ld", p->pid, state, p->name, p->nice, p->vruntime);
+#else
     printk("%d %s %s", p->pid, state, p->name);
+#endif
     printk("\n");
   }
 }

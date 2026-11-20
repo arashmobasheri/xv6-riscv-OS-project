@@ -142,3 +142,14 @@ sys_setmlfq(void)
 
   return ksetmlfq(pid, burst, conf);
 }
+
+uint64
+sys_setnice(void)
+{
+  int pid, nice;
+
+  argint(0, &pid);
+  argint(1, &nice);
+
+  return setnice(pid, nice);
+}
