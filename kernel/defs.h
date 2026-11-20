@@ -105,6 +105,7 @@ int             either_copyin(void *dst, int user_src, uint64 src, uint64 len);
 void            procdump(void);
 int             should_yield(void);
 void            aging_tick(void);
+int             setnice(int pid, int nice);
 
 // swtch.S
 void            swtch(struct context*, struct context*);

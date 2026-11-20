@@ -97,6 +97,12 @@ struct proc {
   int confidence;        // Confidence level for burst_time (0-100)
   uint quantum_ticks;    // CPU ticks used in the current RR turn
 
+  // CFS scheduling information
+  int nice;
+  uint weight;
+  uint64 vruntime;
+  uint cfs_ticks;
+
   // wait_lock must be held when using this:
   struct proc *parent; // Parent process
 
